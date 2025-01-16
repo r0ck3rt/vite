@@ -1,10 +1,15 @@
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import colors from 'picocolors'
 import { describe, expect, test, vi } from 'vitest'
 import type { OutputChunk, OutputOptions, RollupOutput } from 'rollup'
 import type { LibraryFormats, LibraryOptions } from '../build'
-import { build, resolveBuildOutputs, resolveLibFilename } from '../build'
+import {
+  build,
+  createBuilder,
+  resolveBuildOutputs,
+  resolveLibFilename,
+} from '../build'
 import type { Logger } from '../logger'
 import { createLogger } from '../logger'
 
@@ -52,6 +57,17 @@ describe('build', () => {
       buildProject('red'),
       buildProject('blue'),
     ])
+    expect(getOutputHashChanges(result[0], result[1])).toMatchInlineSnapshot(`
+      {
+        "changed": [
+          "index",
+          "_subentry.css",
+        ],
+        "unchanged": [
+          "undefined",
+        ],
+      }
+    `)
     assertOutputHashContentChange(result[0], result[1])
   })
 
@@ -100,7 +116,130 @@ describe('build', () => {
       buildProject('yellow'),
       buildProject('blue'),
     ])
+    expect(getOutputHashChanges(result[0], result[1])).toMatchInlineSnapshot(`
+      {
+        "changed": [
+          "index",
+          "_foo",
+          "_bar",
+          "_baz.css",
+        ],
+        "unchanged": [
+          "_foo.css",
+          "_bar.css",
+          "undefined",
+        ],
+      }
+    `)
     assertOutputHashContentChange(result[0], result[1])
+  })
+
+  test.for([
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+    ['auto', true],
+    ['auto', false],
+  ] as const)(
+    'large json object files should have tree-shaking (json.stringify: %s, json.namedExports: %s)',
+    async ([stringify, namedExports]) => {
+      const esBundle = (await build({
+        mode: 'development',
+        root: resolve(__dirname, 'packages/build-project'),
+        logLevel: 'silent',
+        json: { stringify, namedExports },
+        build: {
+          minify: false,
+          modulePreload: { polyfill: false },
+          write: false,
+        },
+        plugins: [
+          {
+            name: 'test',
+            resolveId(id) {
+              if (
+                id === 'entry.js' ||
+                id === 'object.json' ||
+                id === 'array.json'
+              ) {
+                return '\0' + id
+              }
+            },
+            load(id) {
+              if (id === '\0entry.js') {
+                return `
+                  import object from 'object.json';
+                  import array from 'array.json';
+                  console.log();
+                `
+              }
+              if (id === '\0object.json') {
+                return `
+                  {"value": {"${stringify}_${namedExports}":"JSON_OBJ${'_'.repeat(10_000)}"}}
+                `
+              }
+              if (id === '\0array.json') {
+                return `
+                  ["${stringify}_${namedExports}","JSON_ARR${'_'.repeat(10_000)}"]
+                `
+              }
+            },
+          },
+        ],
+      })) as RollupOutput
+
+      const foo = esBundle.output.find(
+        (chunk) => chunk.type === 'chunk' && chunk.isEntry,
+      ) as OutputChunk
+      expect(foo.code).not.contains('JSON_ARR')
+      expect(foo.code).not.contains('JSON_OBJ')
+    },
+  )
+
+  test('external modules should not be hoisted in library build', async () => {
+    const [esBundle] = (await build({
+      logLevel: 'silent',
+      build: {
+        lib: {
+          entry: ['foo.js', 'bar.js'],
+          formats: ['es'],
+        },
+        rollupOptions: {
+          external: 'external',
+        },
+        write: false,
+      },
+      plugins: [
+        {
+          name: 'test',
+          resolveId(id) {
+            const name = basename(id)
+            if (name === 'foo.js' || name === 'bar.js') {
+              return name
+            }
+          },
+          load(id) {
+            if (id === 'foo.js') {
+              return `
+                  import bar from 'bar.js'
+                  export default bar()
+                `
+            }
+            if (id === 'bar.js') {
+              return `
+                  import ext from 'external';
+                  export default ext();`
+            }
+          },
+        },
+      ],
+    })) as RollupOutput[]
+
+    const foo = esBundle.output.find(
+      (chunk) => chunk.fileName === 'foo.js',
+    ) as OutputChunk
+    expect(foo.code).not.contains('import "external"')
   })
 })
 
@@ -531,6 +670,210 @@ describe('resolveBuildOutputs', () => {
       ),
     )
   })
+
+  test('ssrEmitAssets', async () => {
+    const result = await build({
+      root: resolve(__dirname, 'fixtures/emit-assets'),
+      logLevel: 'silent',
+      build: {
+        ssr: true,
+        ssrEmitAssets: true,
+        rollupOptions: {
+          input: {
+            index: '/entry',
+          },
+        },
+      },
+    })
+    expect(result).toMatchObject({
+      output: [
+        {
+          fileName: 'index.mjs',
+        },
+        {
+          fileName: expect.stringMatching(/assets\/index-[-\w]{8}\.css/),
+        },
+      ],
+    })
+  })
+
+  test('emitAssets', async () => {
+    const builder = await createBuilder({
+      root: resolve(__dirname, 'fixtures/emit-assets'),
+      logLevel: 'warn',
+      environments: {
+        ssr: {
+          build: {
+            ssr: true,
+            emitAssets: true,
+            rollupOptions: {
+              input: {
+                index: '/entry',
+              },
+            },
+          },
+        },
+      },
+    })
+    const result = await builder.build(builder.environments.ssr)
+    expect(result).toMatchObject({
+      output: [
+        {
+          fileName: 'index.mjs',
+        },
+        {
+          fileName: expect.stringMatching(/assets\/index-[-\w]{8}\.css/),
+        },
+      ],
+    })
+  })
+
+  test('ssr builtin', async () => {
+    const builder = await createBuilder({
+      root: resolve(__dirname, 'fixtures/dynamic-import'),
+      logLevel: 'warn',
+      environments: {
+        ssr: {
+          build: {
+            ssr: true,
+            rollupOptions: {
+              input: {
+                index: '/entry',
+              },
+            },
+          },
+        },
+      },
+    })
+    const result = await builder.build(builder.environments.ssr)
+    expect((result as RollupOutput).output[0].code).not.toContain('preload')
+  })
+
+  test('ssr custom', async () => {
+    const builder = await createBuilder({
+      root: resolve(__dirname, 'fixtures/dynamic-import'),
+      logLevel: 'warn',
+      environments: {
+        custom: {
+          build: {
+            ssr: true,
+            rollupOptions: {
+              input: {
+                index: '/entry',
+              },
+            },
+          },
+        },
+      },
+    })
+    const result = await builder.build(builder.environments.custom)
+    expect((result as RollupOutput).output[0].code).not.toContain('preload')
+  })
+})
+
+test('default sharedConfigBuild true on build api', async () => {
+  let counter = 0
+  await build({
+    root: resolve(__dirname, 'fixtures/emit-assets'),
+    logLevel: 'warn',
+    build: {
+      ssr: true,
+      rollupOptions: {
+        input: {
+          index: '/entry',
+        },
+      },
+    },
+    plugins: [
+      {
+        name: 'test-plugin',
+        config() {
+          counter++
+        },
+      },
+    ],
+  })
+  expect(counter).toBe(1)
+})
+
+test.for([true, false])(
+  'minify per environment (builder.sharedPlugins: %s)',
+  async (sharedPlugins) => {
+    const root = resolve(__dirname, 'fixtures/shared-plugins/minify')
+    const builder = await createBuilder({
+      root,
+      logLevel: 'warn',
+      environments: {
+        client: {
+          build: {
+            outDir: './dist/client',
+            rollupOptions: {
+              input: '/entry.js',
+            },
+          },
+        },
+        ssr: {
+          build: {
+            outDir: './dist/server',
+            rollupOptions: {
+              input: '/entry.js',
+            },
+          },
+        },
+        custom1: {
+          build: {
+            minify: true,
+            outDir: './dist/custom1',
+            rollupOptions: {
+              input: '/entry.js',
+            },
+          },
+        },
+        custom2: {
+          build: {
+            minify: false,
+            outDir: './dist/custom2',
+            rollupOptions: {
+              input: '/entry.js',
+            },
+          },
+        },
+      },
+      builder: {
+        sharedPlugins,
+      },
+    })
+    const client = await builder.build(builder.environments.client)
+    const ssr = await builder.build(builder.environments.ssr)
+    const custom1 = await builder.build(builder.environments.custom1)
+    const custom2 = await builder.build(builder.environments.custom2)
+    expect(
+      ([client, ssr, custom1, custom2] as RollupOutput[]).map(
+        (o) => o.output[0].code.split('\n').length,
+      ),
+    ).toEqual([2, 5, 2, 5])
+  },
+)
+
+test('adjust worker build error for worker.format', async () => {
+  try {
+    await build({
+      root: resolve(__dirname, 'fixtures/worker-dynamic'),
+      build: {
+        rollupOptions: {
+          input: {
+            index: '/main.js',
+          },
+        },
+      },
+      logLevel: 'silent',
+    })
+  } catch (e) {
+    expect(e.message).toContain('worker.format')
+    expect(e.message).not.toContain('output.format')
+    return
+  }
+  expect.unreachable()
 })
 
 /**
@@ -553,5 +896,19 @@ function assertOutputHashContentChange(
         ).toEqual(chunk2.code)
       }
     }
+  }
+}
+
+function getOutputHashChanges(output1: RollupOutput, output2: RollupOutput) {
+  const map1 = Object.fromEntries(
+    output1.output.map((o) => [o.name, o.fileName]),
+  )
+  const map2 = Object.fromEntries(
+    output2.output.map((o) => [o.name, o.fileName]),
+  )
+  const names = Object.keys(map1).filter(Boolean)
+  return {
+    changed: names.filter((name) => map1[name] !== map2[name]),
+    unchanged: names.filter((name) => map1[name] === map2[name]),
   }
 }

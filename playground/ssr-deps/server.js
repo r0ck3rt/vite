@@ -8,6 +8,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const isTest = process.env.VITEST
 
+const noExternal = [
+  '@vitejs/test-no-external-cjs',
+  '@vitejs/test-import-builtin-cjs',
+  '@vitejs/test-no-external-css',
+  '@vitejs/test-external-entry',
+]
+
 export async function createServer(root = process.cwd(), hmrPort) {
   const resolve = (p) => path.resolve(__dirname, p)
 
@@ -36,17 +43,19 @@ export async function createServer(root = process.cwd(), hmrPort) {
     appType: 'custom',
     ssr: {
       noExternal: [
-        '@vitejs/test-no-external-cjs',
-        '@vitejs/test-import-builtin-cjs',
-        '@vitejs/test-no-external-css',
-        '@vitejs/test-external-entry',
+        ...noExternal,
+        '@vitejs/test-nested-exclude',
+        '@vitejs/test-nested-include',
       ],
       external: [
         '@vitejs/test-nested-external',
         '@vitejs/test-external-entry/entry',
       ],
       optimizeDeps: {
-        disabled: 'build',
+        include: [
+          ...noExternal,
+          '@vitejs/test-nested-exclude > @vitejs/test-nested-include',
+        ],
       },
     },
     plugins: [
@@ -64,12 +73,29 @@ export async function createServer(root = process.cwd(), hmrPort) {
           }
         },
       },
+      {
+        name: 'virtual-isomorphic-module',
+        resolveId(id) {
+          if (id === 'virtual:isomorphic-module') {
+            return '\0virtual:isomorphic-module'
+          }
+        },
+        load(id, { ssr }) {
+          if (id === '\0virtual:isomorphic-module') {
+            if (ssr) {
+              return 'export { default } from "/src/isomorphic-module-server.js";'
+            } else {
+              return 'export { default } from "/src/isomorphic-module-browser.js";'
+            }
+          }
+        },
+      },
     ],
   })
   // use vite's connect instance as middleware
   app.use(vite.middlewares)
 
-  app.use('*', async (req, res) => {
+  app.use('*all', async (req, res) => {
     try {
       const url = req.originalUrl
 

@@ -1,31 +1,40 @@
+import path from 'node:path'
 import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping'
-import type { ModuleGraph } from '../server/moduleGraph'
+import type { EnvironmentModuleGraph } from '..'
 
 let offset: number
-try {
-  new Function('throw new Error(1)')()
-} catch (e) {
-  // in Node 12, stack traces account for the function wrapper.
-  // in Node 13 and later, the function wrapper adds two lines,
-  // which must be subtracted to generate a valid mapping
-  const match = /:(\d+):\d+\)$/.exec(e.stack.split('\n')[1])
-  offset = match ? +match[1] - 1 : 0
+
+function calculateOffsetOnce() {
+  if (offset !== undefined) {
+    return
+  }
+
+  try {
+    new Function('throw new Error(1)')()
+  } catch (e) {
+    // in Node 12, stack traces account for the function wrapper.
+    // in Node 13 and later, the function wrapper adds two lines,
+    // which must be subtracted to generate a valid mapping
+    const match = /:(\d+):\d+\)$/.exec(e.stack.split('\n')[1])
+    offset = match ? +match[1] - 1 : 0
+  }
 }
 
 export function ssrRewriteStacktrace(
   stack: string,
-  moduleGraph: ModuleGraph,
+  moduleGraph: EnvironmentModuleGraph,
 ): string {
+  calculateOffsetOnce()
   return stack
     .split('\n')
     .map((line) => {
       return line.replace(
         /^ {4}at (?:(\S.*?)\s\()?(.+?):(\d+)(?::(\d+))?\)?/,
-        (input, varName, url, line, column) => {
-          if (!url) return input
+        (input, varName, id, line, column) => {
+          if (!id) return input
 
-          const mod = moduleGraph.urlToModuleMap.get(url)
-          const rawSourceMap = mod?.ssrTransformResult?.map
+          const mod = moduleGraph.getModuleById(id)
+          const rawSourceMap = mod?.transformResult?.map
 
           if (!rawSourceMap) {
             return input
@@ -35,15 +44,18 @@ export function ssrRewriteStacktrace(
 
           const pos = originalPositionFor(traced, {
             line: Number(line) - offset,
-            column: Number(column),
+            // stacktrace's column is 1-indexed, but sourcemap's one is 0-indexed
+            column: Number(column) - 1,
           })
 
-          if (!pos.source || pos.line == null || pos.column == null) {
+          if (!pos.source) {
             return input
           }
 
           const trimmedVarName = varName.trim()
-          const source = `${pos.source}:${pos.line}:${pos.column}`
+          const sourceFile = path.resolve(path.dirname(id), pos.source)
+          // stacktrace's column is 1-indexed, but sourcemap's one is 0-indexed
+          const source = `${sourceFile}:${pos.line}:${pos.column + 1}`
           if (!trimmedVarName || trimmedVarName === 'eval') {
             return `    at ${source}`
           } else {
@@ -74,7 +86,10 @@ export function rebindErrorStacktrace(e: Error, stacktrace: string): void {
 
 const rewroteStacktraces = new WeakSet()
 
-export function ssrFixStacktrace(e: Error, moduleGraph: ModuleGraph): void {
+export function ssrFixStacktrace(
+  e: Error,
+  moduleGraph: EnvironmentModuleGraph,
+): void {
   if (!e.stack) return
   // stacktrace shouldn't be rewritten more than once
   if (rewroteStacktraces.has(e)) return

@@ -9,8 +9,10 @@
  */
 
 import { join } from 'node:path'
-import { execSync } from 'node:child_process'
+import { exec } from 'node:child_process'
+import type { ExecOptions } from 'node:child_process'
 import open from 'open'
+import type { Options } from 'open'
 import spawn from 'cross-spawn'
 import colors from 'picocolors'
 import type { Logger } from '../logger'
@@ -18,25 +20,23 @@ import { VITE_PACKAGE_DIR } from '../constants'
 
 /**
  * Reads the BROWSER environment variable and decides what to do with it.
- * Returns true if it opened a browser or ran a node.js script, otherwise false.
  */
 export function openBrowser(
   url: string,
   opt: string | true,
   logger: Logger,
-): boolean {
+): void {
   // The browser executable to open.
   // See https://github.com/sindresorhus/open#app for documentation.
   const browser = typeof opt === 'string' ? opt : process.env.BROWSER || ''
   if (browser.toLowerCase().endsWith('.js')) {
-    return executeNodeScript(browser, url, logger)
+    executeNodeScript(browser, url, logger)
   } else if (browser.toLowerCase() !== 'none') {
     const browserArgs = process.env.BROWSER_ARGS
       ? process.env.BROWSER_ARGS.split(' ')
       : []
-    return startBrowserProcess(browser, browserArgs, url)
+    startBrowserProcess(browser, browserArgs, url, logger)
   }
-  return false
 }
 
 function executeNodeScript(scriptPath: string, url: string, logger: Logger) {
@@ -56,7 +56,6 @@ function executeNodeScript(scriptPath: string, url: string, logger: Logger) {
       )
     }
   })
-  return true
 }
 
 const supportedChromiumBrowsers = [
@@ -70,10 +69,11 @@ const supportedChromiumBrowsers = [
   'Chromium',
 ]
 
-function startBrowserProcess(
+async function startBrowserProcess(
   browser: string | undefined,
   browserArgs: string[],
   url: string,
+  logger: Logger,
 ) {
   // If we're on OS X, the user hasn't specifically
   // requested a different browser, we can try opening
@@ -88,25 +88,22 @@ function startBrowserProcess(
 
   if (shouldTryOpenChromeWithAppleScript) {
     try {
-      const ps = execSync('ps cax').toString()
+      const ps = await execAsync('ps cax')
       const openedBrowser =
         preferredOSXBrowser && ps.includes(preferredOSXBrowser)
           ? preferredOSXBrowser
           : supportedChromiumBrowsers.find((b) => ps.includes(b))
       if (openedBrowser) {
         // Try our best to reuse existing tab with AppleScript
-        execSync(
-          `osascript openChrome.applescript "${encodeURI(
-            url,
-          )}" "${openedBrowser}"`,
+        await execAsync(
+          `osascript openChrome.applescript "${url}" "${openedBrowser}"`,
           {
             cwd: join(VITE_PACKAGE_DIR, 'bin'),
-            stdio: 'ignore',
           },
         )
         return true
       }
-    } catch (err) {
+    } catch {
       // Ignore errors
     }
   }
@@ -122,12 +119,34 @@ function startBrowserProcess(
   // Fallback to open
   // (It will always open new tab)
   try {
-    const options: open.Options = browser
+    const options: Options = browser
       ? { app: { name: browser, arguments: browserArgs } }
       : {}
-    open(url, options).catch(() => {}) // Prevent `unhandledRejection` error.
+
+    new Promise((_, reject) => {
+      open(url, options)
+        .then((subprocess) => {
+          subprocess.on('error', reject)
+        })
+        .catch(reject)
+    }).catch((err) => {
+      logger.error(err.stack || err.message)
+    })
+
     return true
-  } catch (err) {
+  } catch {
     return false
   }
+}
+
+function execAsync(command: string, options?: ExecOptions): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(command, options, (error, stdout) => {
+      if (error) {
+        reject(error)
+      } else {
+        resolve(stdout.toString())
+      }
+    })
+  })
 }

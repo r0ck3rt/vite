@@ -4,6 +4,7 @@ import type {
   ManualChunkMeta,
   OutputOptions,
 } from 'rollup'
+import { arraify, isInNodeModules } from '../utils'
 import type { UserConfig } from '../../node'
 import type { Plugin } from '../plugin'
 
@@ -25,6 +26,9 @@ export const isCSSRequest = (request: string): boolean =>
 // The cache needs to be reset on buildStart for watch mode to work correctly
 // Don't use this manualChunks strategy for ssr, lib mode, and 'umd' or 'iife'
 
+/**
+ * @deprecated use build.rollupOptions.output.manualChunks or framework specific configuration
+ */
 export class SplitVendorChunkCache {
   cache: Map<string, boolean>
   constructor() {
@@ -35,13 +39,16 @@ export class SplitVendorChunkCache {
   }
 }
 
+/**
+ * @deprecated use build.rollupOptions.output.manualChunks or framework specific configuration
+ */
 export function splitVendorChunk(
   options: { cache?: SplitVendorChunkCache } = {},
 ): GetManualChunk {
   const cache = options.cache ?? new SplitVendorChunkCache()
   return (id, { getModuleInfo }) => {
     if (
-      id.includes('node_modules') &&
+      isInNodeModules(id) &&
       !isCSSRequest(id) &&
       staticImportedByEntry(id, getModuleInfo, cache.cache)
     ) {
@@ -86,13 +93,16 @@ function staticImportedByEntry(
   return someImporterIs
 }
 
+/**
+ * @deprecated use build.rollupOptions.output.manualChunks or framework specific configuration
+ */
 export function splitVendorChunkPlugin(): Plugin {
   const caches: SplitVendorChunkCache[] = []
   function createSplitVendorChunk(output: OutputOptions, config: UserConfig) {
     const cache = new SplitVendorChunkCache()
     caches.push(cache)
     const build = config.build ?? {}
-    const format = output?.format
+    const format = output.format
     if (!build.ssr && !build.lib && format !== 'umd' && format !== 'iife') {
       return splitVendorChunk({ cache })
     }
@@ -100,9 +110,9 @@ export function splitVendorChunkPlugin(): Plugin {
   return {
     name: 'vite:split-vendor-chunk',
     config(config) {
-      let outputs = config?.build?.rollupOptions?.output
+      let outputs = config.build?.rollupOptions?.output
       if (outputs) {
-        outputs = Array.isArray(outputs) ? outputs : [outputs]
+        outputs = arraify(outputs)
         for (const output of outputs) {
           const viteManualChunks = createSplitVendorChunk(output, config)
           if (viteManualChunks) {
@@ -112,9 +122,14 @@ export function splitVendorChunkPlugin(): Plugin {
                 output.manualChunks = (id: string, api: ManualChunkMeta) => {
                   return userManualChunks(id, api) ?? viteManualChunks(id, api)
                 }
+              } else {
+                // else, leave the object form of manualChunks untouched, as
+                // we can't safely replicate rollup handling.
+                // eslint-disable-next-line no-console
+                console.warn(
+                  "(!) the `splitVendorChunk` plugin doesn't have any effect when using the object form of `build.rollupOptions.output.manualChunks`. Consider using the function form instead.",
+                )
               }
-              // else, leave the object form of manualChunks untouched, as
-              // we can't safely replicate rollup handling.
             } else {
               output.manualChunks = viteManualChunks
             }

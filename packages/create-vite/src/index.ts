@@ -4,25 +4,53 @@ import { fileURLToPath } from 'node:url'
 import spawn from 'cross-spawn'
 import minimist from 'minimist'
 import prompts from 'prompts'
-import {
+import colors from 'picocolors'
+
+const {
   blue,
+  blueBright,
   cyan,
   green,
-  lightGreen,
-  lightRed,
+  greenBright,
   magenta,
   red,
+  redBright,
   reset,
   yellow,
-} from 'kolorist'
+} = colors
 
 // Avoids autoconversion to number of the project name by defining that the args
 // non associated with an option ( _ ) needs to be parsed as a string. See #4606
 const argv = minimist<{
-  t?: string
   template?: string
-}>(process.argv.slice(2), { string: ['_'] })
+  help?: boolean
+}>(process.argv.slice(2), {
+  default: { help: false },
+  alias: { h: 'help', t: 'template' },
+  string: ['_'],
+})
 const cwd = process.cwd()
+
+// prettier-ignore
+const helpMessage = `\
+Usage: create-vite [OPTION]... [DIRECTORY]
+
+Create a new Vite project in JavaScript or TypeScript.
+With no arguments, start the CLI in interactive mode.
+
+Options:
+  -t, --template NAME        use a specific template
+
+Available templates:
+${yellow    ('vanilla-ts     vanilla'  )}
+${green     ('vue-ts         vue'      )}
+${cyan      ('react-ts       react'    )}
+${cyan      ('react-swc-ts   react-swc')}
+${magenta   ('preact-ts      preact'   )}
+${redBright ('lit-ts         lit'      )}
+${red       ('svelte-ts      svelte'   )}
+${blue      ('solid-ts       solid'    )}
+${blueBright('qwik-ts        qwik'     )}`
 
 type ColorFunc = (str: string | number) => string
 type Framework = {
@@ -45,14 +73,14 @@ const FRAMEWORKS: Framework[] = [
     color: yellow,
     variants: [
       {
-        name: 'vanilla',
-        display: 'JavaScript',
-        color: yellow,
-      },
-      {
         name: 'vanilla-ts',
         display: 'TypeScript',
         color: blue,
+      },
+      {
+        name: 'vanilla',
+        display: 'JavaScript',
+        color: yellow,
       },
     ],
   },
@@ -62,14 +90,14 @@ const FRAMEWORKS: Framework[] = [
     color: green,
     variants: [
       {
-        name: 'vue',
-        display: 'JavaScript',
-        color: yellow,
-      },
-      {
         name: 'vue-ts',
         display: 'TypeScript',
         color: blue,
+      },
+      {
+        name: 'vue',
+        display: 'JavaScript',
+        color: yellow,
       },
       {
         name: 'custom-create-vue',
@@ -80,7 +108,7 @@ const FRAMEWORKS: Framework[] = [
       {
         name: 'custom-nuxt',
         display: 'Nuxt ↗',
-        color: lightGreen,
+        color: greenBright,
         customCommand: 'npm exec nuxi init TARGET_DIR',
       },
     ],
@@ -91,14 +119,19 @@ const FRAMEWORKS: Framework[] = [
     color: cyan,
     variants: [
       {
-        name: 'react',
-        display: 'JavaScript',
-        color: yellow,
-      },
-      {
         name: 'react-ts',
         display: 'TypeScript',
         color: blue,
+      },
+      {
+        name: 'react-swc-ts',
+        display: 'TypeScript + SWC',
+        color: blue,
+      },
+      {
+        name: 'react',
+        display: 'JavaScript',
+        color: yellow,
       },
       {
         name: 'react-swc',
@@ -106,9 +139,10 @@ const FRAMEWORKS: Framework[] = [
         color: yellow,
       },
       {
-        name: 'react-swc-ts',
-        display: 'TypeScript + SWC',
-        color: blue,
+        name: 'custom-react-router',
+        display: 'React Router v7 ↗',
+        color: cyan,
+        customCommand: 'npm create react-router@latest TARGET_DIR',
       },
     ],
   },
@@ -118,31 +152,37 @@ const FRAMEWORKS: Framework[] = [
     color: magenta,
     variants: [
       {
+        name: 'preact-ts',
+        display: 'TypeScript',
+        color: blue,
+      },
+      {
         name: 'preact',
         display: 'JavaScript',
         color: yellow,
       },
       {
-        name: 'preact-ts',
-        display: 'TypeScript',
-        color: blue,
+        name: 'custom-create-preact',
+        display: 'Customize with create-preact ↗',
+        color: magenta,
+        customCommand: 'npm create preact@latest TARGET_DIR',
       },
     ],
   },
   {
     name: 'lit',
     display: 'Lit',
-    color: lightRed,
+    color: redBright,
     variants: [
-      {
-        name: 'lit',
-        display: 'JavaScript',
-        color: yellow,
-      },
       {
         name: 'lit-ts',
         display: 'TypeScript',
         color: blue,
+      },
+      {
+        name: 'lit',
+        display: 'JavaScript',
+        color: yellow,
       },
     ],
   },
@@ -152,20 +192,79 @@ const FRAMEWORKS: Framework[] = [
     color: red,
     variants: [
       {
-        name: 'svelte',
-        display: 'JavaScript',
-        color: yellow,
-      },
-      {
         name: 'svelte-ts',
         display: 'TypeScript',
         color: blue,
       },
       {
+        name: 'svelte',
+        display: 'JavaScript',
+        color: yellow,
+      },
+      {
         name: 'custom-svelte-kit',
         display: 'SvelteKit ↗',
         color: red,
-        customCommand: 'npm create svelte@latest TARGET_DIR',
+        customCommand: 'npm exec sv create TARGET_DIR',
+      },
+    ],
+  },
+  {
+    name: 'solid',
+    display: 'Solid',
+    color: blue,
+    variants: [
+      {
+        name: 'solid-ts',
+        display: 'TypeScript',
+        color: blue,
+      },
+      {
+        name: 'solid',
+        display: 'JavaScript',
+        color: yellow,
+      },
+    ],
+  },
+  {
+    name: 'qwik',
+    display: 'Qwik',
+    color: blueBright,
+    variants: [
+      {
+        name: 'qwik-ts',
+        display: 'TypeScript',
+        color: blueBright,
+      },
+      {
+        name: 'qwik',
+        display: 'JavaScript',
+        color: yellow,
+      },
+      {
+        name: 'custom-qwik-city',
+        display: 'QwikCity ↗',
+        color: blueBright,
+        customCommand: 'npm create qwik@latest basic TARGET_DIR',
+      },
+    ],
+  },
+  {
+    name: 'angular',
+    display: 'Angular',
+    color: red,
+    variants: [
+      {
+        name: 'custom-angular',
+        display: 'Angular ↗',
+        color: red,
+        customCommand: 'npm exec @angular/cli@latest new TARGET_DIR',
+      },
+      {
+        name: 'custom-analog',
+        display: 'Analog ↗',
+        color: yellow,
+        customCommand: 'npm create analog@latest TARGET_DIR',
       },
     ],
   },
@@ -180,13 +279,20 @@ const FRAMEWORKS: Framework[] = [
         color: reset,
         customCommand: 'npm create vite-extra@latest TARGET_DIR',
       },
+      {
+        name: 'create-electron-vite',
+        display: 'create-electron-vite ↗',
+        color: reset,
+        customCommand: 'npm create electron-vite@latest TARGET_DIR',
+      },
     ],
   },
 ]
 
-const TEMPLATES = FRAMEWORKS.map(
-  (f) => (f.variants && f.variants.map((v) => v.name)) || [f.name],
-).reduce((a, b) => a.concat(b), [])
+const TEMPLATES = FRAMEWORKS.map((f) => f.variants.map((v) => v.name)).reduce(
+  (a, b) => a.concat(b),
+  [],
+)
 
 const renameFiles: Record<string, string | undefined> = {
   _gitignore: '.gitignore',
@@ -198,13 +304,22 @@ async function init() {
   const argTargetDir = formatTargetDir(argv._[0])
   const argTemplate = argv.template || argv.t
 
+  const help = argv.help
+  if (help) {
+    console.log(helpMessage)
+    return
+  }
+
   let targetDir = argTargetDir || defaultTargetDir
-  const getProjectName = () =>
-    targetDir === '.' ? path.basename(path.resolve()) : targetDir
+  const getProjectName = () => path.basename(path.resolve(targetDir))
 
   let result: prompts.Answers<
     'projectName' | 'overwrite' | 'packageName' | 'framework' | 'variant'
   >
+
+  prompts.override({
+    overwrite: argv.overwrite,
+  })
 
   try {
     result = await prompts(
@@ -220,17 +335,32 @@ async function init() {
         },
         {
           type: () =>
-            !fs.existsSync(targetDir) || isEmpty(targetDir) ? null : 'confirm',
+            !fs.existsSync(targetDir) || isEmpty(targetDir) ? null : 'select',
           name: 'overwrite',
           message: () =>
             (targetDir === '.'
               ? 'Current directory'
               : `Target directory "${targetDir}"`) +
-            ` is not empty. Remove existing files and continue?`,
+            ` is not empty. Please choose how to proceed:`,
+          initial: 0,
+          choices: [
+            {
+              title: 'Cancel operation',
+              value: 'no',
+            },
+            {
+              title: 'Remove existing files and continue',
+              value: 'yes',
+            },
+            {
+              title: 'Ignore files and continue',
+              value: 'ignore',
+            },
+          ],
         },
         {
-          type: (_, { overwrite }: { overwrite?: boolean }) => {
-            if (overwrite === false) {
+          type: (_, { overwrite }: { overwrite?: string }) => {
+            if (overwrite === 'no') {
               throw new Error(red('✖') + ' Operation cancelled')
             }
             return null
@@ -265,8 +395,8 @@ async function init() {
           }),
         },
         {
-          type: (framework: Framework) =>
-            framework && framework.variants ? 'select' : null,
+          type: (framework: Framework | /* package name */ string) =>
+            typeof framework === 'object' ? 'select' : null,
           name: 'variant',
           message: reset('Select a variant:'),
           choices: (framework: Framework) =>
@@ -295,7 +425,7 @@ async function init() {
 
   const root = path.join(cwd, targetDir)
 
-  if (overwrite) {
+  if (overwrite === 'yes') {
     emptyDir(root)
   } else if (!fs.existsSync(root)) {
     fs.mkdirSync(root, { recursive: true })
@@ -318,16 +448,26 @@ async function init() {
 
   if (customCommand) {
     const fullCustomCommand = customCommand
-      .replace(/^npm create/, `${pkgManager} create`)
+      .replace(/^npm create /, () => {
+        // `bun create` uses it's own set of templates,
+        // the closest alternative is using `bun x` directly on the package
+        if (pkgManager === 'bun') {
+          return 'bun x create-'
+        }
+        return `${pkgManager} create `
+      })
       // Only Yarn 1.x doesn't support `@version` in the `create` command
       .replace('@latest', () => (isYarn1 ? '' : '@latest'))
       .replace(/^npm exec/, () => {
-        // Prefer `pnpm dlx` or `yarn dlx`
+        // Prefer `pnpm dlx`, `yarn dlx`, or `bun x`
         if (pkgManager === 'pnpm') {
           return 'pnpm dlx'
         }
         if (pkgManager === 'yarn' && !isYarn1) {
           return 'yarn dlx'
+        }
+        if (pkgManager === 'bun') {
+          return 'bun x'
         }
         // Use `npm exec` in all other cases,
         // including Yarn 1.x and other custom npm clients.
@@ -336,7 +476,9 @@ async function init() {
 
     const [command, ...args] = fullCustomCommand.split(' ')
     // we replace TARGET_DIR here because targetDir may include a space
-    const replacedArgs = args.map((arg) => arg.replace('TARGET_DIR', targetDir))
+    const replacedArgs = args.map((arg) =>
+      arg.replace('TARGET_DIR', () => targetDir),
+    )
     const { status } = spawn.sync(command, replacedArgs, {
       stdio: 'inherit',
     })
@@ -467,7 +609,7 @@ function setupReactSwc(root: string, isTs: boolean) {
   editFile(path.resolve(root, 'package.json'), (content) => {
     return content.replace(
       /"@vitejs\/plugin-react": ".+?"/,
-      `"@vitejs/plugin-react-swc": "^3.0.0"`,
+      `"@vitejs/plugin-react-swc": "^3.5.0"`,
     )
   })
   editFile(

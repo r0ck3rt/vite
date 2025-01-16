@@ -1,5 +1,5 @@
-import fs from 'node:fs'
 import path from 'node:path'
+import fs from 'node:fs'
 import type {
   Alias,
   AliasOptions,
@@ -7,14 +7,14 @@ import type {
   ResolvedConfig,
 } from '..'
 import type { Plugin } from '../plugin'
-import { createIsConfiguredAsSsrExternal } from '../ssr/ssrExternal'
+import { isConfiguredAsExternal } from '../external'
 import {
   bareImportRE,
-  cleanUrl,
+  isInNodeModules,
   isOptimizable,
   moduleListContains,
 } from '../utils'
-import { getDepsOptimizer } from '../optimizer'
+import { cleanUrl, withTrailingSlash } from '../../shared/utils'
 import { tryOptimizedResolve } from './resolve'
 
 /**
@@ -22,18 +22,19 @@ import { tryOptimizedResolve } from './resolve'
  */
 export function preAliasPlugin(config: ResolvedConfig): Plugin {
   const findPatterns = getAliasPatterns(config.resolve.alias)
-  const isConfiguredAsExternal = createIsConfiguredAsSsrExternal(config)
   const isBuild = config.command === 'build'
   return {
     name: 'vite:pre-alias',
     async resolveId(id, importer, options) {
-      const ssr = options?.ssr === true
-      const depsOptimizer = getDepsOptimizer(config, ssr)
+      const { environment } = this
+      const ssr = environment.config.consumer === 'server'
+      const depsOptimizer =
+        environment.mode === 'dev' ? environment.depsOptimizer : undefined
       if (
         importer &&
         depsOptimizer &&
         bareImportRE.test(id) &&
-        !options?.scan &&
+        !options.scan &&
         id !== '@vite/client' &&
         id !== '@vite/env'
       ) {
@@ -42,15 +43,16 @@ export function preAliasPlugin(config: ResolvedConfig): Plugin {
             depsOptimizer,
             id,
             importer,
+            config.resolve.preserveSymlinks,
+            config.packageCache,
           )
           if (optimizedId) {
             return optimizedId // aliased dep already optimized
           }
-
-          const resolved = await this.resolve(id, importer, {
-            skipSelf: true,
-            ...options,
-          })
+          if (depsOptimizer.options.noDiscovery) {
+            return
+          }
+          const resolved = await this.resolve(id, importer, options)
           if (resolved && !depsOptimizer.isOptimizedDepFile(resolved.id)) {
             const optimizeDeps = depsOptimizer.options
             const resolvedId = cleanUrl(resolved.id)
@@ -60,10 +62,14 @@ export function preAliasPlugin(config: ResolvedConfig): Plugin {
               fs.existsSync(resolvedId) &&
               !moduleListContains(optimizeDeps.exclude, id) &&
               path.isAbsolute(resolvedId) &&
-              (resolvedId.includes('node_modules') ||
+              (isInNodeModules(resolvedId) ||
                 optimizeDeps.include?.includes(id)) &&
               isOptimizable(resolvedId, optimizeDeps) &&
-              !(isBuild && ssr && isConfiguredAsExternal(id)) &&
+              !(
+                isBuild &&
+                ssr &&
+                isConfiguredAsExternal(environment, id, importer)
+              ) &&
               (!ssr || optimizeAliasReplacementForSSR(resolvedId, optimizeDeps))
             ) {
               // aliased dep has not yet been optimized
@@ -108,17 +114,22 @@ function matches(pattern: string | RegExp, importee: string) {
   if (importee === pattern) {
     return true
   }
-  return importee.startsWith(pattern + '/')
+  return importee.startsWith(withTrailingSlash(pattern))
 }
 
 function getAliasPatterns(
   entries: (AliasOptions | undefined) & Alias[],
 ): (string | RegExp)[] {
-  if (!entries) {
-    return []
-  }
   if (Array.isArray(entries)) {
     return entries.map((entry) => entry.find)
   }
   return Object.entries(entries).map(([find]) => find)
+}
+
+export function getAliasPatternMatcher(
+  entries: (AliasOptions | undefined) & Alias[],
+): (importee: string) => boolean {
+  const patterns = getAliasPatterns(entries)
+  return (importee: string) =>
+    patterns.some((pattern) => matches(pattern, importee))
 }
